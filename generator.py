@@ -3,6 +3,37 @@ from config import GROQ_API_KEY, LLM_MODEL
 
 _client = Groq(api_key=GROQ_API_KEY)
 
+AVAILABLE_GAMES = "Catan, Clue, Codenames, Monopoly, Pandemic, Risk, Ticket to Ride, and Uno"
+
+SYSTEM_PROMPT = (
+    "You are RulesBot, a board-game rules assistant. Answer the user's question "
+    "using ONLY the rule text provided in the context. Do not use any outside "
+    "knowledge of these or any other games, even if you are confident you know "
+    "the answer. If the context does not contain enough information to answer, "
+    "do not guess — reply exactly with: \"I couldn't find that rule in the loaded "
+    f"rule books. I can only answer questions about: {AVAILABLE_GAMES}.\"\n\n"
+    "Each source in the context is labelled with the game it comes from. The "
+    "context often includes sources from games that have nothing to do with the "
+    "question. Answer as if ONLY the relevant sources were provided: use the "
+    "source(s) that actually answer the question and completely ignore the rest. "
+    "Do NOT mention, list, or explain the unrelated games, and do NOT note that a "
+    "game lacks the rule — say nothing about them at all. Begin your answer by "
+    "naming the game it applies to (e.g. 'In Catan, ...'). If the question "
+    "genuinely applies to more than one game, address each relevant one "
+    "separately and make clear which rule belongs to which game. Never present a "
+    "rule without saying which game it is from. A confident wrong answer is worse "
+    "than admitting the rule isn't available."
+)
+
+
+def _format_context(retrieved_chunks):
+    """Build the labelled, numbered context block from retrieved chunks."""
+    blocks = [
+        f"[Source {i} — {chunk['game']}]\n{chunk['text']}"
+        for i, chunk in enumerate(retrieved_chunks, start=1)
+    ]
+    return "\n\n".join(blocks)
+
 
 def generate_response(query, retrieved_chunks):
     """
@@ -35,5 +66,15 @@ def generate_response(query, retrieved_chunks):
             "Try rephrasing your question — or check that your ingestion pipeline is working."
         )
 
-    # Your implementation here.
-    return "⚙️ Response generation not yet implemented. Complete Milestone 3 to activate answers."
+    context = _format_context(retrieved_chunks)
+    user_message = f"Context:\n{context}\n\nQuestion: {query}"
+
+    response = _client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        temperature=0.2,  # low — we want grounded, repeatable answers, not creativity
+    )
+    return response.choices[0].message.content

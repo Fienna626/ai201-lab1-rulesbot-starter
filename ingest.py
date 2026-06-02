@@ -1,4 +1,5 @@
 import os
+import re
 from config import DOCS_PATH
 
 
@@ -20,51 +21,88 @@ def load_documents():
     return documents
 
 
+def _split_long_paragraph(paragraph, max_chars):
+    """
+    Sub-split a paragraph that exceeds `max_chars` along sentence boundaries.
+
+    Packs whole sentences into pieces of up to `max_chars`, carrying one
+    sentence of overlap into the next piece so context isn't lost at the
+    boundary. Splitting on sentences (not raw characters) means a piece
+    never starts or ends mid-word.
+    """
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", paragraph) if s]
+    pieces = []
+    current = []
+    cur_len = 0
+
+    for sentence in sentences:
+        add_len = len(sentence) + (1 if current else 0)
+        if current and cur_len + add_len > max_chars:
+            pieces.append(" ".join(current))
+            # One-sentence overlap into the next piece.
+            current = [current[-1], sentence]
+            cur_len = len(current[-2]) + 1 + len(sentence)
+        else:
+            current.append(sentence)
+            cur_len += add_len
+
+    if current:
+        pieces.append(" ".join(current))
+
+    return pieces
+
+
 def chunk_document(text, game_name):
     """
     Split a rule document into chunks ready for embedding.
 
-    This function is already implemented — read through it and the inline
-    comments before moving on. The decisions made here directly shape what
-    retrieval returns in Milestones 2 and 3, so it's worth understanding
-    before you build on top of it.
+    Strategy: paragraph-aware splitting.
+      Rule books are written as discrete rules — an UPPERCASE header followed
+      by its rule text, separated from neighbours by a blank line. Splitting on
+      blank lines keeps each rule whole and self-contained, which embeds far
+      more cleanly than a blind character window (no mid-word starts, no two
+      unrelated rules merged into one chunk).
 
-    Strategy: character-based sliding window with overlap.
-      - chunk_size = 300 characters: long enough to carry the semantic
-        meaning of a single rule, short enough to return targeted results
-      - overlap = 50 characters: duplicates a small window of text at each
-        boundary so a rule that spans two chunks can still be retrieved intact
-      - min_length = 50 characters: filters out whitespace artifacts and
-        very short fragments that add noise without useful semantic content
+      - Paragraphs (blank-line delimited) are the primary unit.
+      - max_chars = 600: an unusually long paragraph is sub-split on sentence
+        boundaries so no single chunk is too large to embed meaningfully.
+      - min_length = 50: filters out headers/whitespace fragments that carry
+        no useful semantic signal.
 
     Returns a list of dicts, each with:
       - "text"     : the chunk text (str)
       - "game"     : the game name, e.g. "Catan" (str)
       - "chunk_id" : a unique identifier, e.g. "catan_0", "catan_1" (str)
     """
-    chunk_size = 300
-    overlap = 50
+    max_chars = 600
     min_length = 50
 
-    chunks = []
     prefix = game_name.lower().replace(" ", "_")
+    chunks = []
     counter = 0
 
-    start = 0
-    while start < len(text):
-        end = start + chunk_size
-        chunk_text = text[start:end].strip()
+    # Split into paragraphs on one or more blank lines.
+    paragraphs = re.split(r"\n\s*\n", text)
 
-        if len(chunk_text) >= min_length:
-            chunks.append({
-                "text": chunk_text,
-                "game": game_name,
-                "chunk_id": f"{prefix}_{counter}",
-            })
-            counter += 1
+    for paragraph in paragraphs:
+        paragraph = paragraph.strip()
+        if len(paragraph) < min_length:
+            continue
 
-        # Advance by (chunk_size - overlap) so the next chunk shares
-        # `overlap` characters with the tail of this one.
-        start += chunk_size - overlap
+        # Short paragraphs stay whole; long ones are sentence-split.
+        pieces = (
+            [paragraph]
+            if len(paragraph) <= max_chars
+            else _split_long_paragraph(paragraph, max_chars)
+        )
+
+        for piece in pieces:
+            if len(piece) >= min_length:
+                chunks.append({
+                    "text": piece,
+                    "game": game_name,
+                    "chunk_id": f"{prefix}_{counter}",
+                })
+                counter += 1
 
     return chunks
